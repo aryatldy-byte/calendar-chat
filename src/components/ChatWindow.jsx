@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { supabase } from '../utils/supabaseClient';
+import ContactList from './ContactList';
 import { pushSupported, enablePush, disablePush, isPushEnabled } from '../utils/push';
 
 const TTL = 5 * 60 * 1000; // messages disappear from the screen after 5 minutes
@@ -23,33 +24,41 @@ function Ticks({ status }) {
 }
 
 export default function ChatWindow({ user, monthName, onBack, onSignOut }) {
-  const [partner, setPartner] = useState(null);
+  const [partners, setPartners] = useState([]);
+  const [activeId, setActiveId] = useState(null);
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState('');
   const [now, setNow] = useState(Date.now());
   const [error, setError] = useState('');
   const [notif, setNotif] = useState('checking'); // checking | unsupported | off | on
   const bottom = useRef(null);
+  const activeRef = useRef(null);
 
-  // Find the other approved user (poll until they exist)
+  // Contacts = approved users the admin has linked me with (row-level security enforces this)
   useEffect(() => {
     let stop = false;
-    async function find() {
+    async function load() {
       const { data } = await supabase.from('users').select('id,email')
-        .eq('approved', true).neq('id', user.id).limit(1).maybeSingle();
-      if (!stop && data) setPartner(data);
+        .eq('approved', true).neq('id', user.id).order('email');
+      if (!stop && data) setPartners(data);
     }
-    find();
-    const t = setInterval(() => { if (!partner) find(); }, 10000);
+    load();
+    const t = setInterval(load, 15000);
     return () => { stop = true; clearInterval(t); };
-  }, [user.id, partner]);
-
-  // Mark everything sent to me as "seen" – only while the chat is actually visible
-  const markSeen = useCallback(async () => {
-    if (document.visibilityState !== 'visible') return;
-    await supabase.from('messages').update({ status: 'seen' })
-      .eq('receiver_id', user.id).neq('status', 'seen');
   }, [user.id]);
+
+  // One contact -> open it straight away; several -> show the contact list
+  const partner = partners.length === 1 ? partners[0] : partners.find((p) => p.id === activeId) || null;
+  useEffect(() => { activeRef.current = partner?.id || null; }, [partner?.id]);
+
+  // Mark messages from the OPEN conversation as "seen" – only while the chat is visible
+  const markSeen = useCallback(async () => {
+    const from = activeRef.current;
+    if (!from || document.visibilityState !== 'visible') return;
+    await supabase.from('messages').update({ status: 'seen' })
+      .eq('receiver_id', user.id).eq('sender_id', from).neq('status', 'seen');
+  }, [user.id]);
+  useEffect(() => { markSeen(); }, [partner?.id, markSeen]);
 
   // Fallback local notification if the page is open in the background (server push uses the same tag)
   const localNotify = useCallback(() => {
@@ -74,7 +83,7 @@ export default function ChatWindow({ user, monthName, onBack, onSignOut }) {
     const channel = supabase.channel(`chat-${user.id}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, ({ new: m }) => {
         setMessages((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, m]));
-        if (m.receiver_id === user.id) { markSeen(); localNotify(); }
+        if (m.receiver_id === user.id) { if (m.sender_id === activeRef.current) markSeen(); localNotify(); }
       })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages' }, ({ new: m }) =>
         setMessages((prev) => prev.map((x) => (x.id === m.id ? { ...x, ...m } : x))))
@@ -99,7 +108,7 @@ export default function ChatWindow({ user, monthName, onBack, onSignOut }) {
     return () => clearInterval(t);
   }, []);
 
-  useEffect(() => { bottom.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages.length]);
+  useEffect(() => { bottom.current?.scrollIntoView({ behavior: 'smooth' }); }, [thread.length, partner?.id]);
 
   // Notification state
   useEffect(() => {
@@ -119,6 +128,14 @@ export default function ChatWindow({ user, monthName, onBack, onSignOut }) {
       }
     } catch (e) { setError(e.message); }
   }
+
+  const thread = partner
+    ? messages.filter((m) => (m.sender_id === partner.id && m.receiver_id === user.id) ||
+                             (m.sender_id === user.id && m.receiver_id === partner.id))
+    : [];
+  const unreadFor = (id) =>
+    messages.filter((m) => m.sender_id === id && m.receiver_id === user.id && m.status !== 'seen').length;
+  const goBack = () => (partner && partners.length > 1 ? setActiveId(null) : onBack());
 
   async function send(e) {
     e.preventDefault();
@@ -149,12 +166,12 @@ export default function ChatWindow({ user, monthName, onBack, onSignOut }) {
   return (
     <div className="flex h-[100dvh] flex-col">
       <header className="flex shrink-0 items-center gap-2 bg-wa-dark px-3 py-2.5 text-white shadow">
-        <button onClick={onBack} aria-label="Back to calendar" className="rounded-full p-2 hover:bg-white/10">
+        <button onClick={goBack} aria-label="Back" className="rounded-full p-2 hover:bg-white/10">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6" /></svg>
         </button>
         <div className="min-w-0 flex-1">
-          <div className="truncate font-semibold">{monthName}</div>
-          <div className="truncate text-xs text-white/70">{partner ? partner.email : 'Waiting for the second person…'}</div>
+          <div className="truncate font-semibold">{partner ? partner.email : monthName}</div>
+          <div className="truncate text-xs text-white/70">{partner ? monthName : 'Chats'}</div>
         </div>
         <button onClick={toggleNotifications} disabled={notif === 'checking'}
           aria-label={notif === 'on' ? 'Turn notifications off' : 'Turn notifications on'}
@@ -168,12 +185,16 @@ export default function ChatWindow({ user, monthName, onBack, onSignOut }) {
         <button onClick={onSignOut} className="rounded-full px-3 py-1 text-xs text-white/80 hover:bg-white/10">Sign out</button>
       </header>
 
+      {!partner ? (
+        <ContactList partners={partners} unreadFor={unreadFor} onOpen={setActiveId} />
+      ) : (
+        <>
       <main className="wa-pattern flex-1 overflow-y-auto px-3 py-4">
         <div className="mx-auto flex max-w-2xl flex-col gap-1.5">
           <p className="mx-auto mb-2 rounded-lg bg-amber-100 px-3 py-1 text-center text-xs text-amber-900">
             Messages disappear from the screen after 5 minutes.
           </p>
-          {messages.map((m) => {
+          {thread.map((m) => {
             const mine = m.sender_id === user.id;
             const fading = now - new Date(m.timestamp).getTime() >= TTL - FADE;
             return (
@@ -196,8 +217,12 @@ export default function ChatWindow({ user, monthName, onBack, onSignOut }) {
         </div>
       </main>
 
+        </>
+      )}
+
       {error && <div className="shrink-0 bg-red-50 px-4 py-1 text-center text-xs text-red-700">{error}</div>}
 
+      {partner && (
       <form onSubmit={send} className="shrink-0 bg-slate-100 px-2 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
         <div className="mx-auto flex max-w-2xl items-center gap-2">
           <input
@@ -214,6 +239,7 @@ export default function ChatWindow({ user, monthName, onBack, onSignOut }) {
           </button>
         </div>
       </form>
+      )}
     </div>
   );
 }

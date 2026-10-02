@@ -10,7 +10,7 @@ Click a **month name**, enter the **4‑digit password**, and a WhatsApp‑style
 | Piece | Behaviour |
 |---|---|
 | Calendar (`/`) | Real dates for any year. Clicking a month name opens a PIN modal (5 wrong tries → 30 s lockout). |
-| Chat (`/chat`) | Needs the PIN, then a Supabase login. Only **approved** users get in; the DB allows **max 2 approved users**. |
+| Chat (`/chat`) | Needs the PIN, then a Supabase login. Only **approved** users get in. The admin decides who may chat with whom (many users, private 1‑to‑1 chats). |
 | Auto‑hide | Messages fade out and disappear from the screen 5 minutes after they were sent (frontend only). |
 | Admin (`/admin`) | Approve / reject / revoke users, see message count, purge messages. |
 | Security | Row Level Security: only the two participants can read messages; admins can purge but **cannot read** content. |
@@ -57,7 +57,7 @@ NEXT_PUBLIC_CHAT_PIN=1234
 
 **Change `NEXT_PUBLIC_CHAT_PIN` (default `1234`).**
 
-Flow to test: both people sign up on `/chat` (after the PIN) → sign in at `/admin` → approve both → they chat.
+Flow to test: people sign up on `/chat` (after the PIN) → sign in at `/admin` → approve them → **link** pairs under "Who can chat with whom" → they chat.
 
 ## 3. Push to GitHub
 
@@ -108,6 +108,15 @@ Uses Web Push, so it works with the app closed. Setup:
 **iPhone (iOS 16.4+):** push only works for a home-screen app: Safari → Share → *Add to Home Screen*, open it from the icon, then tap the bell.
 Signing out turns notifications off for that device, so the next person on a shared phone isn't notified.
 Tapping a notification opens the calendar, so the PIN is needed again.
+
+## Multiple users (private 1‑to‑1 chats)
+
+Run `supabase/migration_003_multi_user.sql` (fresh installs get it from `schema.sql`). It removes the 2‑user limit and adds a `pairings` table. Users already approved are linked automatically so your current chat keeps working.
+
+- **Admin → "Who can chat with whom"**: pick two approved users and click **Link** (or **Unlink**).
+- A user sees only the people they're linked with. One contact opens straight into the chat; several show a contact list with unread counts.
+- Ticks, "seen" and notifications work per conversation. A message only turns blue when that specific chat is open.
+- Unlinking someone immediately cuts off access to that conversation (messages are enforced in the database, not just the UI).
 
 ## Weekly cleanup
 
