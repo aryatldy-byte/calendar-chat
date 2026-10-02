@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { supabase } from '../utils/supabaseClient';
+import { pushSupported, enablePush, disablePush, isPushEnabled } from '../utils/push';
 
 const TTL = 5 * 60 * 1000; // messages disappear from the screen after 5 minutes
 const FADE = 3000;         // fade-out animation starts 3s before that
@@ -7,12 +8,27 @@ const FADE = 3000;         // fade-out animation starts 3s before that
 const fmt = (ts) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 const alive = (m) => Date.now() - new Date(m.timestamp).getTime() < TTL;
 
+/** pending -> ✓ grey · sent/delivered (saved in Supabase) -> ✓✓ grey · seen -> ✓✓ blue */
+function Ticks({ status }) {
+  const double = status !== 'pending';
+  const label = status === 'pending' ? 'Sending' : status === 'seen' ? 'Seen' : 'Delivered';
+  return (
+    <svg role="img" aria-label={label} width="18" height="12" viewBox="0 0 18 12" fill="none"
+      stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"
+      className={status === 'seen' ? 'text-[#53bdeb]' : 'text-slate-500'}>
+      <path d="M1 6.5l3.5 3.5L11 2" />
+      {double && <path d="M4.5 6.5l3.5 3.5L14.5 2" transform="translate(2.5 0)" />}
+    </svg>
+  );
+}
+
 export default function ChatWindow({ user, monthName, onBack, onSignOut }) {
   const [partner, setPartner] = useState(null);
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState('');
   const [now, setNow] = useState(Date.now());
   const [error, setError] = useState('');
+  const [notif, setNotif] = useState('checking'); // checking | unsupported | off | on
   const bottom = useRef(null);
 
   // Find the other approved user (poll until they exist)
@@ -28,18 +44,51 @@ export default function ChatWindow({ user, monthName, onBack, onSignOut }) {
     return () => { stop = true; clearInterval(t); };
   }, [user.id, partner]);
 
-  // Load recent messages + subscribe to new ones
+  // Mark everything sent to me as "seen" – only while the chat is actually visible
+  const markSeen = useCallback(async () => {
+    if (document.visibilityState !== 'visible') return;
+    await supabase.from('messages').update({ status: 'seen' })
+      .eq('receiver_id', user.id).neq('status', 'seen');
+  }, [user.id]);
+
+  // Fallback local notification if the page is open in the background (server push uses the same tag)
+  const localNotify = useCallback(() => {
+    if (document.visibilityState === 'visible') return;
+    if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+    navigator.serviceWorker?.ready.then((reg) =>
+      reg.showNotification('Calendar', {
+        body: 'New event added', tag: 'calendar-msg', renotify: true, icon: '/icon-192.png',
+      })).catch(() => {});
+  }, []);
+
+  // Load recent messages + realtime (new messages and status changes)
   useEffect(() => {
     const since = new Date(Date.now() - TTL).toISOString();
     supabase.from('messages').select('*').gt('timestamp', since).order('timestamp')
-      .then(({ data, error }) => (error ? setError(error.message) : setMessages(data || [])));
+      .then(({ data, error }) => {
+        if (error) return setError(error.message);
+        setMessages(data || []);
+        markSeen();
+      });
 
     const channel = supabase.channel(`chat-${user.id}`)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, ({ new: m }) =>
-        setMessages((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, m])))
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, ({ new: m }) => {
+        setMessages((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, m]));
+        if (m.receiver_id === user.id) { markSeen(); localNotify(); }
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages' }, ({ new: m }) =>
+        setMessages((prev) => prev.map((x) => (x.id === m.id ? { ...x, ...m } : x))))
       .subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, [user.id]);
+  }, [user.id, markSeen, localNotify]);
+
+  // When the person comes back to the tab/app, mark as seen
+  useEffect(() => {
+    const onVis = () => markSeen();
+    document.addEventListener('visibilitychange', onVis);
+    window.addEventListener('focus', onVis);
+    return () => { document.removeEventListener('visibilitychange', onVis); window.removeEventListener('focus', onVis); };
+  }, [markSeen]);
 
   // 1s ticker: drives fade-out and removes expired messages (frontend-only hiding)
   useEffect(() => {
@@ -52,20 +101,54 @@ export default function ChatWindow({ user, monthName, onBack, onSignOut }) {
 
   useEffect(() => { bottom.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages.length]);
 
+  // Notification state
+  useEffect(() => {
+    if (!pushSupported()) return setNotif('unsupported');
+    isPushEnabled().then((on) => setNotif(on ? 'on' : 'off')).catch(() => setNotif('off'));
+  }, []);
+
+  async function toggleNotifications() {
+    setError('');
+    try {
+      if (notif === 'unsupported') {
+        setError('Notifications are not available in this browser. On iPhone: Share → Add to Home Screen, then open the app from the home screen.');
+      } else if (notif === 'on') {
+        await disablePush(); setNotif('off');
+      } else {
+        await enablePush(user.id); setNotif('on');
+      }
+    } catch (e) { setError(e.message); }
+  }
+
   async function send(e) {
     e.preventDefault();
     const content = text.trim();
     if (!content || !partner) return;
     setText(''); setError('');
+
+    // Optimistic message: single grey tick until Supabase confirms it
+    const tmp = `tmp-${Date.now()}`;
+    setMessages((prev) => [...prev, {
+      id: tmp, sender_id: user.id, receiver_id: partner.id, content,
+      timestamp: new Date().toISOString(), status: 'pending',
+    }]);
+
     const { data, error } = await supabase.from('messages')
       .insert({ sender_id: user.id, receiver_id: partner.id, content }).select().single();
-    if (error) { setError(error.message); setText(content); return; }
-    setMessages((prev) => (prev.some((x) => x.id === data.id) ? prev : [...prev, data]));
+    if (error) {
+      setMessages((prev) => prev.filter((m) => m.id !== tmp));
+      setError(error.message); setText(content);
+      return;
+    }
+    setMessages((prev) => {
+      const rest = prev.filter((m) => m.id !== tmp);
+      return rest.some((x) => x.id === data.id) ? rest : [...rest, data];
+    });
   }
 
   return (
     <div className="flex h-[100dvh] flex-col">
-      <header className="flex shrink-0 items-center gap-3 bg-wa-dark px-3 py-2.5 text-white shadow">
+      <header className="flex shrink-0 items-center gap-2 bg-wa-dark px-3 py-2.5 text-white shadow">
         <button onClick={onBack} aria-label="Back to calendar" className="rounded-full p-2 hover:bg-white/10">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6" /></svg>
         </button>
@@ -73,6 +156,15 @@ export default function ChatWindow({ user, monthName, onBack, onSignOut }) {
           <div className="truncate font-semibold">{monthName}</div>
           <div className="truncate text-xs text-white/70">{partner ? partner.email : 'Waiting for the second person…'}</div>
         </div>
+        <button onClick={toggleNotifications} disabled={notif === 'checking'}
+          aria-label={notif === 'on' ? 'Turn notifications off' : 'Turn notifications on'}
+          title={notif === 'on' ? 'Notifications on' : 'Notifications off'}
+          className="rounded-full p-2 hover:bg-white/10 disabled:opacity-50">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.7 21a2 2 0 01-3.4 0" />
+            {notif !== 'on' && <path d="M3 3l18 18" />}
+          </svg>
+        </button>
         <button onClick={onSignOut} className="rounded-full px-3 py-1 text-xs text-white/80 hover:bg-white/10">Sign out</button>
       </header>
 
@@ -92,7 +184,10 @@ export default function ChatWindow({ user, monthName, onBack, onSignOut }) {
                   (fading ? ' animate-fadeout' : '')
                 }>
                   <span className="whitespace-pre-wrap break-words">{m.content}</span>
-                  <span className="ml-2 inline-block translate-y-1 text-[11px] text-slate-500">{fmt(m.timestamp)}</span>
+                  <span className="ml-2 inline-flex translate-y-1 items-center gap-1 align-bottom text-[11px] text-slate-500">
+                    {fmt(m.timestamp)}
+                    {mine && <Ticks status={m.status || 'sent'} />}
+                  </span>
                 </div>
               </div>
             );

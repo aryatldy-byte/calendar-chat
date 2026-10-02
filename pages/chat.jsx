@@ -4,6 +4,7 @@ import { supabase } from '../src/utils/supabaseClient';
 import { MONTHS, readUnlock, clearUnlock } from '../src/utils/unlock';
 import ChatWindow from '../src/components/ChatWindow';
 import SignupForm from '../src/components/SignupForm';
+import { disablePush } from '../src/utils/push';
 
 export default function ChatPage() {
   const router = useRouter();
@@ -33,7 +34,10 @@ export default function ChatPage() {
   useEffect(() => { loadProfile(); }, [loadProfile]);
 
   const back = () => { clearUnlock(); router.push('/'); };
-  const signOut = () => supabase.auth.signOut();
+  const signOut = async () => {
+    try { await disablePush(); } catch (_) {} // stop notifications for this device before leaving
+    await supabase.auth.signOut();
+  };
 
   if (month === null || session === undefined) return null;
 

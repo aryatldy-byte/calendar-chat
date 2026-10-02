@@ -28,6 +28,18 @@ Click a **month name**, enter the **4‑digit password**, and a WhatsApp‑style
 
 > The brief's schema lists a `password_hash` column on `users`/`admins`. Supabase Auth already stores salted password hashes in `auth.users`, so those columns exist but stay empty; `users.id` is the Auth user id.
 
+### Already ran `schema.sql` before the ticks update?
+Run [`supabase/migration_001_message_status.sql`](supabase/migration_001_message_status.sql) once. (Fresh installs get this from `schema.sql` already.)
+
+### Message ticks
+| Ticks | Meaning |
+|---|---|
+| ✓ grey | Sending – not yet confirmed by Supabase |
+| ✓✓ grey | Saved in Supabase (`status = 'sent'`) |
+| ✓✓ blue | Recipient opened the chat and saw it (`status = 'seen'`) |
+
+"Seen" is set by the recipient's open chat (tab visible) through the `mark_messages_seen()` function, and the sender's screen updates live via Realtime.
+
 ## 2. Run locally
 
 ```bash
@@ -68,6 +80,35 @@ git push -u origin main
    - `NEXT_PUBLIC_CHAT_PIN`
 3. **Deploy**. Then add the Vercel URL to Supabase *Site URL* (step 1.4).
 
+## Message ticks (✓ ✓✓)
+
+| Tick | Meaning |
+|---|---|
+| ✓ grey | Sending – not yet confirmed by Supabase |
+| ✓✓ grey | Delivered – saved in Supabase (`status = 'sent'`) |
+| ✓✓ blue | Seen – the recipient has the chat open and visible (`status = 'seen'`) |
+
+**Upgrading an existing database:** run `supabase/migration_002_ticks_and_push.sql` in the SQL Editor (fresh installs get it from `schema.sql`). It adds `messages.status` and lets only the *receiver* change that one column.
+
+## Notifications when the chat isn't open
+
+Uses Web Push, so it works with the app closed. Setup:
+
+1. Run the migration above (creates `push_subscriptions`).
+2. **Vercel → Environment Variables** – add these (values are in `.env.local`):
+   `NEXT_PUBLIC_VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`, `WEBHOOK_SECRET`, and
+   `SUPABASE_SERVICE_ROLE_KEY` (Supabase → Settings → API → *service_role*). Redeploy.
+   (New VAPID keys: `npx web-push generate-vapid-keys`.)
+3. **Supabase → Database → Webhooks → Create**: table `messages`, event **Insert**, type *HTTP Request*,
+   method `POST`, URL `https://YOUR-APP.vercel.app/api/notify`, and add the HTTP header
+   `x-webhook-secret: <your WEBHOOK_SECRET>`.
+4. Each person opens the chat and taps the **bell** in the header, then allows notifications.
+
+**Android (Chrome):** works in the browser; installing to the home screen is optional.
+**iPhone (iOS 16.4+):** push only works for a home-screen app: Safari → Share → *Add to Home Screen*, open it from the icon, then tap the bell.
+Signing out turns notifications off for that device, so the next person on a shared phone isn't notified.
+Tapping a notification opens the calendar, so the PIN is needed again.
+
 ## Weekly cleanup
 
 Either click **Delete everything / Older than 7 days** in `/admin`, or enable `pg_cron` and uncomment the schedule at the bottom of `schema.sql`.
@@ -78,13 +119,16 @@ Either click **Delete everything / Older than 7 days** in `/admin`, or enable `p
 - "Auto‑hide" is visual only. Messages remain in the database (readable by the two participants via the API) until purged.
 - Hiding relies on the device clock; a badly wrong clock can hide messages early or late.
 - Messages are not end‑to‑end encrypted; Supabase can technically read them.
-- The anon key is public by design; never put the `service_role` key in this project.
+- The anon key is public by design. The `service_role` key is used **only** by the server route `/api/notify`; set it as a Vercel env var, never commit it and never prefix it with `NEXT_PUBLIC_`.
+- Push notifications show a generic "New event added" – never the message text.
 
 ## Structure
 
 ```
 pages/            index.jsx (calendar) · chat.jsx · admin.jsx · _app.jsx
 src/components/   CalendarView · ChatWindow · SignupForm · AdminPanel
-src/utils/        supabaseClient.js · unlock.js
+src/utils/        supabaseClient.js · unlock.js · push.js
+pages/api/        notify.js (sends web-push)
+public/           sw.js · manifest.json · icons
 supabase/         schema.sql
 ```

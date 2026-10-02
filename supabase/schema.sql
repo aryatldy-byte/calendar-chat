@@ -25,7 +25,8 @@ create table if not exists public.messages (
   receiver_id uuid not null references public.users(id) on delete cascade,
   content     text not null check (char_length(content) between 1 and 2000),
   "timestamp" timestamptz not null default now(),
-  hidden      boolean not null default false
+  hidden      boolean not null default false,
+  status      text not null default 'sent' check (status in ('sent','delivered','seen'))
 );
 create index if not exists messages_ts_idx on public.messages ("timestamp");
 
@@ -93,7 +94,7 @@ create policy messages_select on public.messages for select to authenticated
   using (public.is_approved() and (sender_id = auth.uid() or receiver_id = auth.uid()));
 drop policy if exists messages_insert on public.messages;
 create policy messages_insert on public.messages for insert to authenticated
-  with check (sender_id = auth.uid() and public.is_approved() and public.is_approved(receiver_id));
+  with check (sender_id = auth.uid() and status = 'sent' and public.is_approved() and public.is_approved(receiver_id));
 
 -- ---------- Admin-only maintenance (no read access to content needed) ----------
 create or replace function public.admin_message_count() returns bigint
@@ -118,6 +119,22 @@ revoke execute on function public.admin_purge_messages(int)  from public, anon;
 grant  execute on function public.admin_message_count()      to authenticated;
 grant  execute on function public.admin_purge_messages(int)  to authenticated;
 
+-- ---------- Seen ticks ----------
+-- Recipient marks messages as seen via this function (no UPDATE policy needed on the table)
+create or replace function public.mark_messages_seen() returns int
+language plpgsql security definer set search_path = public as $$
+declare n int;
+begin
+  if not public.is_approved() then return 0; end if;
+  update public.messages set status = 'seen'
+   where receiver_id = auth.uid() and status <> 'seen';
+  get diagnostics n = row_count;
+  return n;
+end $$;
+
+revoke execute on function public.mark_messages_seen() from public, anon;
+grant  execute on function public.mark_messages_seen() to authenticated;
+
 -- ---------- Realtime ----------
 alter publication supabase_realtime add table public.messages;
 
@@ -129,3 +146,48 @@ alter publication supabase_realtime add table public.messages;
 -- 1) Supabase → Authentication → Users → Add user (email + password, tick "Auto confirm").
 -- 2) Then run (replace the email):
 -- insert into public.admins (id, email) select id, email from auth.users where email = 'you@example.com';
+
+-- =====================================================================
+-- PART 2: ticks + push (same as migration_002_ticks_and_push.sql)
+-- =====================================================================
+
+-- 1) Message status: 'sent' (default, saved in Supabase) -> 'seen' (recipient opened chat)
+alter table public.messages add column if not exists status text not null default 'sent';
+alter table public.messages drop constraint if exists messages_status_check;
+alter table public.messages add constraint messages_status_check
+  check (status in ('sent', 'delivered', 'seen'));
+
+-- Senders may only insert new messages with status 'sent'
+drop policy if exists messages_insert on public.messages;
+create policy messages_insert on public.messages for insert to authenticated
+  with check (sender_id = auth.uid() and status = 'sent'
+              and public.is_approved() and public.is_approved(receiver_id));
+
+-- The RECEIVER may update ONLY the status column (to mark messages as seen)
+revoke update on public.messages from anon, authenticated;
+grant  update (status) on public.messages to authenticated;
+drop policy if exists messages_mark_seen on public.messages;
+create policy messages_mark_seen on public.messages for update to authenticated
+  using      (public.is_approved() and receiver_id = auth.uid())
+  with check (public.is_approved() and receiver_id = auth.uid());
+
+-- 2) Push notification subscriptions (one row per browser/device)
+create table if not exists public.push_subscriptions (
+  id         uuid primary key default gen_random_uuid(),
+  user_id    uuid not null references public.users(id) on delete cascade,
+  endpoint   text not null unique,
+  p256dh     text not null,
+  auth       text not null,
+  created_at timestamptz not null default now()
+);
+alter table public.push_subscriptions enable row level security;
+
+drop policy if exists push_select on public.push_subscriptions;
+create policy push_select on public.push_subscriptions for select to authenticated using (user_id = auth.uid());
+drop policy if exists push_insert on public.push_subscriptions;
+create policy push_insert on public.push_subscriptions for insert to authenticated with check (user_id = auth.uid());
+drop policy if exists push_update on public.push_subscriptions;
+create policy push_update on public.push_subscriptions for update to authenticated
+  using (user_id = auth.uid()) with check (user_id = auth.uid());
+drop policy if exists push_delete on public.push_subscriptions;
+create policy push_delete on public.push_subscriptions for delete to authenticated using (user_id = auth.uid());
