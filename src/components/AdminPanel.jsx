@@ -2,8 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '../utils/supabaseClient';
 
 const PURGES = [
-  { label: 'Older than 5 minutes', minutes: 5 },
-  { label: 'Older than 7 days', minutes: 7 * 24 * 60 },
+  { label: 'Sent over 5 minutes ago', minutes: 5 },
+  { label: 'Sent over 7 days ago', minutes: 7 * 24 * 60 },
   { label: 'Delete everything', minutes: 0 },
 ];
 

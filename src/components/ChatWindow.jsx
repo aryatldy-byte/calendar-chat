@@ -3,11 +3,12 @@ import { supabase } from '../utils/supabaseClient';
 import ContactList from './ContactList';
 import { pushSupported, enablePush, disablePush, isPushEnabled } from '../utils/push';
 
-const TTL = 5 * 60 * 1000; // messages disappear from the screen after 5 minutes
+const TTL = 5 * 60 * 1000; // a message disappears 5 minutes after the recipient has SEEN it
 const FADE = 3000;         // fade-out animation starts 3s before that
 
 const fmt = (ts) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-const alive = (m) => Date.now() - new Date(m.timestamp).getTime() < TTL;
+// Unseen messages stay; seen messages expire TTL after the server-stamped seen_at
+const alive = (m) => !(m.status === 'seen' && m.seen_at) || Date.now() - new Date(m.seen_at).getTime() < TTL;
 
 /** pending -> ✓ grey · sent/delivered (saved in Supabase) -> ✓✓ grey · seen -> ✓✓ blue */
 function Ticks({ status }) {
@@ -73,7 +74,8 @@ export default function ChatWindow({ user, monthName, onBack, onSignOut }) {
   // Load recent messages + realtime (new messages and status changes)
   useEffect(() => {
     const since = new Date(Date.now() - TTL).toISOString();
-    supabase.from('messages').select('*').gt('timestamp', since).order('timestamp')
+    supabase.from('messages').select('*')
+      .or(`status.neq.seen,seen_at.gt.${since}`).order('timestamp')
       .then(({ data, error }) => {
         if (error) return setError(error.message);
         setMessages(data || []);
@@ -192,11 +194,11 @@ export default function ChatWindow({ user, monthName, onBack, onSignOut }) {
       <main className="wa-pattern flex-1 overflow-y-auto px-3 py-4">
         <div className="mx-auto flex max-w-2xl flex-col gap-1.5">
           <p className="mx-auto mb-2 rounded-lg bg-amber-100 px-3 py-1 text-center text-xs text-amber-900">
-            Messages disappear from the screen after 5 minutes.
+            Messages disappear 5 minutes after they are seen.
           </p>
           {thread.map((m) => {
             const mine = m.sender_id === user.id;
-            const fading = now - new Date(m.timestamp).getTime() >= TTL - FADE;
+            const fading = m.status === 'seen' && m.seen_at && now - new Date(m.seen_at).getTime() >= TTL - FADE;
             return (
               <div key={m.id} className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
                 <div className={

@@ -11,7 +11,7 @@ Click a **month name**, enter the **4‑digit password**, and a WhatsApp‑style
 |---|---|
 | Calendar (`/`) | Real dates for any year. Clicking a month name opens a PIN modal (5 wrong tries → 30 s lockout). |
 | Chat (`/chat`) | Needs the PIN, then a Supabase login. Only **approved** users get in. The admin decides who may chat with whom (many users, private 1‑to‑1 chats). |
-| Auto‑hide | Messages fade out and disappear from the screen 5 minutes after they were sent (frontend only). |
+| Auto‑hide | A message fades out and disappears from the screen **5 minutes after the recipient has seen it** (blue ticks). Unseen messages stay until they're seen. Frontend only. |
 | Admin (`/admin`) | Approve / reject / revoke users, see message count, purge messages. |
 | Security | Row Level Security: only the two participants can read messages; admins can purge but **cannot read** content. |
 
@@ -82,6 +82,8 @@ git push -u origin main
 
 ## Message ticks (✓ ✓✓)
 
+**Upgrading for the "delete after seen" timer:** run `supabase/migration_004_seen_timer.sql` (adds `messages.seen_at`, stamped by the database when a message becomes seen).
+
 | Tick | Meaning |
 |---|---|
 | ✓ grey | Sending – not yet confirmed by Supabase |
@@ -125,8 +127,8 @@ Either click **Delete everything / Older than 7 days** in `/admin`, or enable `p
 ## Honest limitations
 
 - The 4‑digit PIN is a **disguise, not security**: it's compiled into the browser bundle (`NEXT_PUBLIC_*`), so anyone who inspects the JS can read it. Real protection comes from Supabase login + admin approval + RLS.
-- "Auto‑hide" is visual only. Messages remain in the database (readable by the two participants via the API) until purged.
-- Hiding relies on the device clock; a badly wrong clock can hide messages early or late.
+- "Auto‑hide" is visual only. Messages remain in the database (readable by the two participants via the API) until purged, and **unseen messages never expire** until the recipient opens the chat.
+- The 5‑minute timer starts at a server‑stamped `seen_at`, but is compared with each device's clock; a badly wrong clock can hide messages early or late.
 - Messages are not end‑to‑end encrypted; Supabase can technically read them.
 - The anon key is public by design. The `service_role` key is used **only** by the server route `/api/notify`; set it as a Vercel env var, never commit it and never prefix it with `NEXT_PUBLIC_`.
 - Push notifications show a generic "New event added" – never the message text.
