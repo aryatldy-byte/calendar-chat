@@ -52,6 +52,14 @@ export default function ChatWindow({ user, monthName, onBack, onSignOut }) {
   const partner = partners.length === 1 ? partners[0] : partners.find((p) => p.id === activeId) || null;
   useEffect(() => { activeRef.current = partner?.id || null; }, [partner?.id]);
 
+  const thread = partner
+    ? messages.filter((m) => (m.sender_id === partner.id && m.receiver_id === user.id) ||
+                             (m.sender_id === user.id && m.receiver_id === partner.id))
+    : [];
+  const unreadFor = (id) =>
+    messages.filter((m) => m.sender_id === id && m.receiver_id === user.id && m.status !== 'seen').length;
+  const goBack = () => (partner && partners.length > 1 ? setActiveId(null) : onBack());
+
   // Mark messages from the OPEN conversation as "seen" – only while the chat is visible
   const markSeen = useCallback(async () => {
     const from = activeRef.current;
@@ -130,14 +138,6 @@ export default function ChatWindow({ user, monthName, onBack, onSignOut }) {
       }
     } catch (e) { setError(e.message); }
   }
-
-  const thread = partner
-    ? messages.filter((m) => (m.sender_id === partner.id && m.receiver_id === user.id) ||
-                             (m.sender_id === user.id && m.receiver_id === partner.id))
-    : [];
-  const unreadFor = (id) =>
-    messages.filter((m) => m.sender_id === id && m.receiver_id === user.id && m.status !== 'seen').length;
-  const goBack = () => (partner && partners.length > 1 ? setActiveId(null) : onBack());
 
   async function send(e) {
     e.preventDefault();
