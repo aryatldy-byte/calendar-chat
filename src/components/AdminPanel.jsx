@@ -53,8 +53,14 @@ export default function AdminPanel({ user, onSignOut }) {
 
   async function purge({ label, minutes }) {
     if (!confirm(`Delete messages: ${label.toLowerCase()}?`)) return;
-    const { data, error } = await supabase.rpc('admin_purge_messages', { older_than_minutes: minutes });
-    setMsg(error ? error.message : `Deleted ${data} message(s).`);
+    const { data: sess } = await supabase.auth.getSession();
+    const r = await fetch('/api/admin-purge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sess.session?.access_token}` },
+      body: JSON.stringify({ minutes }),
+    });
+    const j = await r.json().catch(() => ({}));
+    setMsg(r.ok ? `Deleted ${j.messages} message(s) and ${j.files} file(s).` : (j.error || 'Purge failed'));
     load();
   }
 

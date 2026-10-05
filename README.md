@@ -129,6 +129,17 @@ Run `supabase/migration_003_multi_user.sql` (fresh installs get it from `schema.
    - *Test sent* but nothing shows → phone settings (Do Not Disturb, battery saver, iPhone needs the home‑screen app).
 2. If **Test works but real messages don't**, the Supabase webhook is the problem: check Database → Webhooks → logs. The URL must be your *production* domain, the header must be exactly `x-webhook-secret` with the `WEBHOOK_SECRET` value, and the other person must have enabled the bell on **their** phone.
 
+## Photos and voice messages
+
+Run `supabase/migration_005_media.sql` (creates the private `chat-media` bucket, 10 MB limit, images + audio only, and the access rules).
+
+- **Photo:** tap the picture icon (camera or gallery). Photos are resized to max 1600 px and re‑encoded, which also strips location/EXIF data.
+- **Voice:** when the text box is empty the button is a microphone – tap to record (max 2 min), then tap send or the bin to cancel. Needs HTTPS and microphone permission.
+- Files live in a **private** bucket; only the two linked participants can open them (short‑lived signed links).
+- **Admin purge** now deletes the files too (via `/api/admin-purge`, which needs `SUPABASE_SERVICE_ROLE_KEY`).
+- **Daily cleanup** (`/api/cleanup`, scheduled in `vercel.json`) deletes files seen more than 1 hour ago, or unseen after 7 days. To enable it add an env var `CRON_SECRET` (any long random string) in Vercel and redeploy.
+- Voice recorded on Chrome/Android is WebM/Opus; very old iPhones (before iOS 17.4 or so) may not play it. Voice recorded on iPhone is M4A and plays everywhere.
+
 ## Weekly cleanup
 
 Either click **Delete everything / Older than 7 days** in `/admin`, or enable `pg_cron` and uncomment the schedule at the bottom of `schema.sql`.
@@ -148,7 +159,7 @@ Either click **Delete everything / Older than 7 days** in `/admin`, or enable `p
 pages/            index.jsx (calendar) · chat.jsx · admin.jsx · _app.jsx
 src/components/   CalendarView · ChatWindow · SignupForm · AdminPanel
 src/utils/        supabaseClient.js · unlock.js · push.js
-pages/api/        notify.js (sends web-push)
+pages/api/        notify.js · notify-test.js · admin-purge.js · cleanup.js
 public/           sw.js · manifest.json · icons
 supabase/         schema.sql
 ```
