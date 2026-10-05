@@ -70,14 +70,14 @@ export default function ChatWindow({ user, monthName, onBack, onSignOut }) {
   }, [user.id]);
   useEffect(() => { markSeen(); }, [partner?.id, markSeen]);
 
-  // Fallback local notification if the page is open in the background (server push uses the same tag)
-  const localNotify = useCallback(() => {
-    if (document.visibilityState === 'visible') return;
-    if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
-    navigator.serviceWorker?.ready.then((reg) =>
-      reg.showNotification('Calendar', {
-        body: 'New event added', tag: 'calendar-msg', renotify: true, icon: '/icon-192.png',
-      })).catch(() => {});
+  // When the app is on screen, clear any notification + icon badge (the server push adds a running count)
+  const clearAlerts = useCallback(() => {
+    if (document.visibilityState !== 'visible') return;
+    navigator.serviceWorker?.ready
+      .then((reg) => reg.getNotifications({ tag: 'calendar-msg' }))
+      .then((list) => list.forEach((n) => n.close()))
+      .catch(() => {});
+    navigator.clearAppBadge?.().catch(() => {});
   }, []);
 
   // Load recent messages + realtime (new messages and status changes)
@@ -94,21 +94,22 @@ export default function ChatWindow({ user, monthName, onBack, onSignOut }) {
     const channel = supabase.channel(`chat-${user.id}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, ({ new: m }) => {
         setMessages((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, m]));
-        if (m.receiver_id === user.id) { if (m.sender_id === activeRef.current) markSeen(); localNotify(); }
+        if (m.receiver_id === user.id) { if (m.sender_id === activeRef.current) markSeen(); }
       })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages' }, ({ new: m }) =>
         setMessages((prev) => prev.map((x) => (x.id === m.id ? { ...x, ...m } : x))))
       .subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, [user.id, markSeen, localNotify]);
+  }, [user.id, markSeen]);
 
   // When the person comes back to the tab/app, mark as seen
   useEffect(() => {
-    const onVis = () => markSeen();
+    const onVis = () => { markSeen(); clearAlerts(); };
+    clearAlerts();
     document.addEventListener('visibilitychange', onVis);
     window.addEventListener('focus', onVis);
     return () => { document.removeEventListener('visibilitychange', onVis); window.removeEventListener('focus', onVis); };
-  }, [markSeen]);
+  }, [markSeen, clearAlerts]);
 
   // 1s ticker: drives fade-out and removes expired messages (frontend-only hiding)
   useEffect(() => {
