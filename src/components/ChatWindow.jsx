@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { supabase } from '../utils/supabaseClient';
 import ContactList from './ContactList';
-import { pushSupported, enablePush, disablePush, isPushEnabled } from '../utils/push';
+import { pushSupported, enablePush, disablePush, isPushEnabled, testPush } from '../utils/push';
 
 const TTL = 5 * 60 * 1000; // a message disappears 5 minutes after the recipient has SEEN it
 const FADE = 3000;         // fade-out animation starts 3s before that
@@ -31,6 +31,7 @@ export default function ChatWindow({ user, monthName, onBack, onSignOut }) {
   const [text, setText] = useState('');
   const [now, setNow] = useState(Date.now());
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const [notif, setNotif] = useState('checking'); // checking | unsupported | off | on
   const bottom = useRef(null);
   const activeRef = useRef(null);
@@ -139,6 +140,14 @@ export default function ChatWindow({ user, monthName, onBack, onSignOut }) {
     } catch (e) { setError(e.message); }
   }
 
+  async function runTest() {
+    setError(''); setNotice('Sending test…');
+    try {
+      const r = await testPush();
+      if (r.ok) setNotice(r.text); else { setNotice(''); setError(r.text); }
+    } catch (e) { setNotice(''); setError(e.message); }
+  }
+
   async function send(e) {
     e.preventDefault();
     const content = text.trim();
@@ -184,6 +193,9 @@ export default function ChatWindow({ user, monthName, onBack, onSignOut }) {
             {notif !== 'on' && <path d="M3 3l18 18" />}
           </svg>
         </button>
+        {notif === 'on' && (
+          <button onClick={runTest} className="rounded-full px-2 py-1 text-xs text-white/80 hover:bg-white/10">Test</button>
+        )}
         <button onClick={onSignOut} className="rounded-full px-3 py-1 text-xs text-white/80 hover:bg-white/10">Sign out</button>
       </header>
 
@@ -222,6 +234,7 @@ export default function ChatWindow({ user, monthName, onBack, onSignOut }) {
         </>
       )}
 
+      {notice && !error && <div className="shrink-0 bg-emerald-50 px-4 py-1 text-center text-xs text-emerald-800">{notice}</div>}
       {error && <div className="shrink-0 bg-red-50 px-4 py-1 text-center text-xs text-red-700">{error}</div>}
 
       {partner && (

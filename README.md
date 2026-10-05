@@ -120,6 +120,15 @@ Run `supabase/migration_003_multi_user.sql` (fresh installs get it from `schema.
 - Ticks, "seen" and notifications work per conversation. A message only turns blue when that specific chat is open.
 - Unlinking someone immediately cuts off access to that conversation (messages are enforced in the database, not just the UI).
 
+### Notifications not arriving? Diagnose in this order
+
+1. In the chat, tap the bell (on), then tap **Test**. It pushes a test notification to your own devices and tells you which step fails:
+   - *Server is missing: …* → add those variables in Vercel and **redeploy**.
+   - *No device is registered* → turn the bell off and on again (and make sure `push_subscriptions` exists – run migration 002).
+   - *Push rejected 403* → key mismatch; turn the bell off/on. *401* → `VAPID_PRIVATE_KEY` doesn't belong to `NEXT_PUBLIC_VAPID_PUBLIC_KEY`.
+   - *Test sent* but nothing shows → phone settings (Do Not Disturb, battery saver, iPhone needs the home‑screen app).
+2. If **Test works but real messages don't**, the Supabase webhook is the problem: check Database → Webhooks → logs. The URL must be your *production* domain, the header must be exactly `x-webhook-secret` with the `WEBHOOK_SECRET` value, and the other person must have enabled the bell on **their** phone.
+
 ## Weekly cleanup
 
 Either click **Delete everything / Older than 7 days** in `/admin`, or enable `pg_cron` and uncomment the schedule at the bottom of `schema.sql`.
