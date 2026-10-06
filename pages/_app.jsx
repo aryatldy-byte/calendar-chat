@@ -1,8 +1,20 @@
 import { useEffect } from 'react';
 import Head from 'next/head';
 import '../styles/globals.css';
+import { useSettings } from '../src/utils/settings';
 
 export default function App({ Component, pageProps }) {
+  const [settings] = useSettings();
+
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const apply = () =>
+      document.documentElement.classList.toggle('dark', settings.theme === 'dark' || (settings.theme === 'system' && mq.matches));
+    apply();
+    mq.addEventListener('change', apply);
+    return () => mq.removeEventListener('change', apply);
+  }, [settings.theme]);
+
   useEffect(() => {
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').catch(() => {});

@@ -140,6 +140,22 @@ Run `supabase/migration_005_media.sql` (creates the private `chat-media` bucket,
 - **Daily cleanup** (`/api/cleanup`, scheduled in `vercel.json`) deletes files seen more than 1 hour ago, or unseen after 7 days. To enable it add an env var `CRON_SECRET` (any long random string) in Vercel and redeploy.
 - Voice recorded on Chrome/Android is WebM/Opus; very old iPhones (before iOS 17.4 or so) may not play it. Voice recorded on iPhone is M4A and plays everywhere.
 
+## Security, privacy and chat features (migration 006)
+
+Run `supabase/migration_006_chat_features.sql` (fresh installs get it from `schema.sql`). Earlier migrations (002–005) must already be applied.
+
+**Lock & privacy (per device, ⚙ Settings in the chat)**
+- **Auto-lock:** returns to the calendar after 15 s–5 min in the background, or after 1–5 min idle. The 🔒 button locks instantly.
+- **App-switcher cover:** the chat is covered whenever the app is backgrounded or unfocused. This is best-effort; some phones snapshot the screen before a web page can react.
+- **Face ID / fingerprint:** Settings → *Face ID / fingerprint* → Turn on. The calendar then asks for biometrics instead of the 4-digit code. The 4-digit code works as a backup only if you tick *Also allow the 4-digit code*. If the phone's biometric registration is ever deleted, clear this site's data to go back to the PIN.
+- This lock is a **device-level screen lock** (like the PIN); real account security is still Supabase login + admin approval + database rules.
+
+**Chat**
+- **Reply, react, edit, delete for everyone:** long-press a message (right-click on desktop). Edits are allowed for 15 minutes; deleting removes the text/file and leaves "This message was deleted". The database enforces who may change what (a recipient can only mark seen).
+- **Typing indicator + online status:** shown in the header and contact list. Turn off sharing in Settings. Status uses a realtime channel named after your private pairing id.
+- **Dark mode:** Settings → Theme (Auto / Light / Dark). The admin page stays light.
+- **Working decoy calendar:** tap any date to add events (stored only in that browser). Today's events show at the top.
+
 ## Weekly cleanup
 
 Either click **Delete everything / Older than 7 days** in `/admin`, or enable `pg_cron` and uncomment the schedule at the bottom of `schema.sql`.

@@ -29,7 +29,7 @@ export default function SignupForm({ session, profile, onRefresh, onSignOut, onB
 
   const shell = (children) => (
     <div className="flex min-h-full items-center justify-center wa-pattern p-4">
-      <div className="w-full max-w-sm animate-pop rounded-2xl bg-white p-6 shadow-lg">{children}</div>
+      <div className="w-full max-w-sm animate-pop rounded-2xl bg-white p-6 shadow-lg dark:bg-[#233138]">{children}</div>
     </div>
   );
 
@@ -37,10 +37,10 @@ export default function SignupForm({ session, profile, onRefresh, onSignOut, onB
     const rejected = profile?.rejected;
     return shell(
       <>
-        <h2 className="text-lg font-semibold text-slate-800">
+        <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-100">
           {rejected ? 'Access denied' : 'Waiting for approval'}
         </h2>
-        <p className="mt-2 text-sm text-slate-600">
+        <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
           {rejected
             ? 'An admin has declined this account.'
             : `Signed in as ${session.user.email}. You can chat as soon as an admin approves your account.`}
@@ -51,7 +51,7 @@ export default function SignupForm({ session, profile, onRefresh, onSignOut, onB
               Check again
             </button>
           )}
-          <button onClick={onSignOut} className="flex-1 rounded-lg border border-slate-300 py-2 font-medium text-slate-700 hover:bg-slate-50">
+          <button onClick={onSignOut} className="flex-1 rounded-lg border border-slate-300 py-2 font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-white/10">
             Sign out
           </button>
         </div>
@@ -61,15 +61,15 @@ export default function SignupForm({ session, profile, onRefresh, onSignOut, onB
 
   return shell(
     <form onSubmit={submit}>
-      <h2 className="text-lg font-semibold text-slate-800">{mode === 'login' ? 'Sign in' : 'Create account'}</h2>
-      <label className="mt-4 block text-sm text-slate-600">Email
+      <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-100">{mode === 'login' ? 'Sign in' : 'Create account'}</h2>
+      <label className="mt-4 block text-sm text-slate-600 dark:text-slate-300">Email
         <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)}
-          className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-wa-teal" />
+          className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-wa-teal" />
       </label>
-      <label className="mt-3 block text-sm text-slate-600">Password
+      <label className="mt-3 block text-sm text-slate-600 dark:text-slate-300">Password
         <input type="password" required minLength={6} value={password} onChange={(e) => setPassword(e.target.value)}
           autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-          className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-wa-teal" />
+          className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-wa-teal" />
       </label>
       {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
       {notice && <p className="mt-3 text-sm text-emerald-700">{notice}</p>}
@@ -80,7 +80,7 @@ export default function SignupForm({ session, profile, onRefresh, onSignOut, onB
         className="mt-3 w-full text-sm text-wa-teal hover:underline">
         {mode === 'login' ? 'New here? Create an account' : 'Have an account? Sign in'}
       </button>
-      <button type="button" onClick={onBack} className="mt-1 w-full text-sm text-slate-500 hover:underline">
+      <button type="button" onClick={onBack} className="mt-1 w-full text-sm text-slate-500 hover:underline dark:text-slate-400">
         Back to calendar
       </button>
     </form>

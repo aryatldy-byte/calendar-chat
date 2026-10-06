@@ -16,9 +16,9 @@ export default function MediaBubble({ m, onOpen }) {
     return () => { off = true; };
   }, [m.media_path, m.localUrl]);
 
-  if (!m.media_path && !m.localUrl) return <span className="text-xs italic text-slate-500">Media no longer available</span>;
-  if (failed) return <span className="text-xs italic text-slate-500">Media unavailable</span>;
-  if (!url) return <div className={`animate-pulse rounded-md bg-slate-300 ${m.type === 'image' ? 'h-40 w-52' : 'h-10 w-56'}`} />;
+  if (!m.media_path && !m.localUrl) return <span className="text-xs italic text-slate-500 dark:text-slate-400">Media no longer available</span>;
+  if (failed) return <span className="text-xs italic text-slate-500 dark:text-slate-400">Media unavailable</span>;
+  if (!url) return <div className={`animate-pulse rounded-md bg-slate-300 dark:bg-slate-600 ${m.type === 'image' ? 'h-40 w-52' : 'h-10 w-56'}`} />;
 
   if (m.type === 'image') {
     return (
@@ -30,7 +30,7 @@ export default function MediaBubble({ m, onOpen }) {
   return (
     <div className="flex items-center gap-2">
       <audio controls preload="metadata" src={url} className="h-10 w-56 max-w-full" />
-      {m.media_duration ? <span className="text-[11px] text-slate-500">{mmss(m.media_duration)}</span> : null}
+      {m.media_duration ? <span className="text-[11px] text-slate-500 dark:text-slate-400">{mmss(m.media_duration)}</span> : null}
     </div>
   );
 }
