@@ -9,6 +9,13 @@ self.addEventListener('push', (event) => {
     const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     // Chat is open and visible -> no notification needed
     if (wins.some((c) => c.visibilityState === 'visible' && new URL(c.url).pathname === '/chat')) return;
+    if (data.kind === 'nudge') { // "I'm online" ping: its own notification, not counted with messages
+      await self.registration.showNotification(data.title || 'Calendar', {
+        body: data.body || 'Event reminder', tag: 'calendar-nudge', renotify: true,
+        icon: '/icon-192.png', badge: '/icon-192.png', vibrate: [200, 100, 200], data: { url: '/' },
+      });
+      return;
+    }
     // Running count: if a notification is still in the tray, add to its count ("3 new events")
     const existing = await self.registration.getNotifications({ tag: 'calendar-msg' });
     const count = ((existing[0] && existing[0].data && existing[0].data.count) || 0) + 1;

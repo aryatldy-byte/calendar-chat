@@ -8,7 +8,7 @@ const fmt = (ts) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minut
 export const previewOf = (m) =>
   m.deleted_at ? 'Deleted message' : m.type === 'image' ? '📷 Photo' : m.type === 'voice' ? '🎤 Voice message' : m.content;
 
-export default function MessageBubble({ m, mine, orig, partnerName, rx, now, onMenu, onView }) {
+export default function MessageBubble({ m, mine, orig, partnerName, rx, now, onMenu, onView, seenAt }) {
   const press = useRef(null);
   const gone = !!m.deleted_at;
   const fadeFrom = gone ? m.deleted_at : m.status === 'seen' ? m.seen_at : null;
@@ -69,6 +69,9 @@ export default function MessageBubble({ m, mine, orig, partnerName, rx, now, onM
             </>
           )}
         </div>
+        {seenAt && !gone && (
+          <div className="mt-0.5 px-1 text-[10px] text-slate-500 dark:text-slate-400">Seen {fmt(seenAt)}</div>
+        )}
         {rx.length > 0 && (
           <div className={`z-10 -mt-2 flex gap-1 ${mine ? 'mr-2' : 'ml-2'}`}>
             {Object.entries(groups).map(([e, n]) => (

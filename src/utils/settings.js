@@ -21,12 +21,13 @@ function saveSettings(s) {
 
 export function useSettings() {
   const [s, setS] = useState(DEFAULTS);
+  const [loaded, setLoaded] = useState(false);
   useEffect(() => {
-    const sync = () => setS(loadSettings());
+    const sync = () => { setS(loadSettings()); setLoaded(true); };
     sync();
     window.addEventListener('cc-settings', sync);
     return () => window.removeEventListener('cc-settings', sync);
   }, []);
   const update = useCallback((patch) => saveSettings({ ...loadSettings(), ...patch }), []);
-  return [s, update];
+  return [s, update, loaded];
 }

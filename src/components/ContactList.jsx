@@ -1,3 +1,5 @@
+import { lastSeenText } from '../utils/format';
+
 export default function ContactList({ partners, unreadFor, online = {}, typing = {}, onOpen }) {
   if (partners.length === 0) {
     return (
@@ -20,7 +22,7 @@ export default function ContactList({ partners, unreadFor, online = {}, typing =
               <span className="min-w-0 flex-1">
                 <span className="block truncate font-medium text-slate-900 dark:text-[#e9edef]">{p.email}</span>
                 <span className={`block text-xs ${typing[p.id] ? 'text-wa-teal' : 'text-slate-500 dark:text-slate-400'}`}>
-                  {typing[p.id] ? 'typing…' : n ? `${n} new message${n > 1 ? 's' : ''}` : online[p.id] ? 'online' : 'Tap to chat'}
+                  {typing[p.id] ? 'typing…' : n ? `${n} new message${n > 1 ? 's' : ''}` : online[p.id] ? 'online' : lastSeenText(p.last_seen_at) || 'Tap to chat'}
                 </span>
               </span>
               {n > 0 && (

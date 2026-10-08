@@ -8,7 +8,7 @@ export const missingEnv = (names) => names.filter((n) => !process.env[n]);
 export const adminClient = () =>
   createClient(SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
 
-export async function sendToUser(admin, userId, body = 'New event added') {
+export async function sendToUser(admin, userId, body = 'New event added', extra = {}) {
   webpush.setVapidDetails(
     (process.env.VAPID_SUBJECT || 'mailto:admin@example.com').trim(),
     process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY.trim(),
@@ -18,7 +18,7 @@ export async function sendToUser(admin, userId, body = 'New event added') {
     .from('push_subscriptions').select('id,endpoint,p256dh,auth').eq('user_id', userId);
   if (error) throw new Error(error.message);
 
-  const payload = JSON.stringify({ title: 'Calendar', body });
+  const payload = JSON.stringify({ title: 'Calendar', body, ...extra });
   const results = await Promise.all((subs || []).map(async (s) => {
     try {
       await webpush.sendNotification(

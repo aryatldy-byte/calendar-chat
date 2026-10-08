@@ -156,6 +156,14 @@ Run `supabase/migration_006_chat_features.sql` (fresh installs get it from `sche
 - **Dark mode:** Settings → Theme (Auto / Light / Dark). The admin page stays light.
 - **Working decoy calendar:** tap any date to add events (stored only in that browser). Today's events show at the top.
 
+## Last seen, "seen at" and the 👋 online ping (migration 007)
+
+Run `supabase/migration_007_last_seen_nudge.sql` (fresh installs get it from `schema.sql`).
+
+- **Last seen:** the header shows *typing…*, *online*, or *last seen today at 2:32 PM* (also in the contact list). It updates while the chat is open and records the moment someone leaves. Turning off **Online status & typing** in Settings also hides your last-seen time (and you still see theirs).
+- **Seen at:** a small "Seen 2:32 PM" line sits under your latest message once the other person has opened it. It disappears with the message, 5 minutes after it's seen; the header's last seen stays.
+- **👋 button (in a chat's header):** pings the other person. If their chat is open they get a green "… is online" banner and a buzz; otherwise they get a push notification reading "Event reminder" (kept generic on purpose, so it reveals nothing on a lock screen). Limited to one per minute per pair, and only between linked users. Needs the notification setup already described above.
+
 ## Weekly cleanup
 
 Either click **Delete everything / Older than 7 days** in `/admin`, or enable `pg_cron` and uncomment the schedule at the bottom of `schema.sql`.

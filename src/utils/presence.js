@@ -6,11 +6,13 @@ import { supabase } from './supabaseClient';
  * (random, secret-to-outsiders) pairing id, so only the two people in a pair can find it.
  * pairs: [{ id, partnerId }]. If `share` is false we stop announcing ourselves but still see the other person.
  */
-export function usePresence(userId, pairs, share) {
+export function usePresence(userId, pairs, share, onNudge) {
   const [online, setOnline] = useState({});
   const [typing, setTyping] = useState({});
   const chans = useRef({});
   const timers = useRef({});
+  const nudgeRef = useRef(onNudge);
+  nudgeRef.current = onNudge;
   const key = pairs.map((p) => p.id).sort().join(',');
 
   useEffect(() => {
@@ -28,6 +30,9 @@ export function usePresence(userId, pairs, share) {
           if (payload.typing) {
             timers.current[partnerId] = setTimeout(() => setTyping((t) => ({ ...t, [partnerId]: false })), 4000);
           }
+        })
+        .on('broadcast', { event: 'nudge' }, ({ payload }) => {
+          if (payload?.user === partnerId) nudgeRef.current?.(partnerId);
         })
         .subscribe(async (status) => {
           if (status === 'SUBSCRIBED' && share && document.visibilityState === 'visible') await ch.track({ at: Date.now() });
@@ -53,5 +58,9 @@ export function usePresence(userId, pairs, share) {
     chans.current[partnerId]?.send({ type: 'broadcast', event: 'typing', payload: { user: userId, typing: isTyping } });
   }, [userId, share]);
 
-  return { online, typing, sendTyping };
+  const sendNudge = useCallback((partnerId) => {
+    chans.current[partnerId]?.send({ type: 'broadcast', event: 'nudge', payload: { user: userId } });
+  }, [userId]);
+
+  return { online, typing, sendTyping, sendNudge };
 }

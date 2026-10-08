@@ -93,7 +93,7 @@ export default function SettingsSheet({ settings, update, notif, onToggleNotif, 
             {msg && <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">{msg}</p>}
           </Row>
 
-          <Row title="Online status & typing" hint="When off, others can't see when you're online or typing (you still see theirs).">
+          <Row title="Online status & typing" hint="When off, others can't see when you're online, typing or your last-seen time (you still see theirs).">
             <Seg label="Online status" value={settings.shareStatus} onChange={(v) => update({ shareStatus: v })}
               options={[[true, 'Share'], [false, 'Hide']]} />
           </Row>

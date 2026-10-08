@@ -10,6 +10,7 @@ import { useSettings } from '../utils/settings';
 import { usePresence } from '../utils/presence';
 import { holdLock } from '../utils/autoLock';
 import { TTL, EDIT_WINDOW } from '../utils/constants';
+import { lastSeenText } from '../utils/format';
 
 // Unseen messages stay; seen messages expire TTL after the server-stamped seen_at; deleted ones vanish after TTL too
 const alive = (m) => {
@@ -20,7 +21,7 @@ const alive = (m) => {
 const iconBtn = 'flex h-11 w-11 shrink-0 items-center justify-center rounded-full';
 
 export default function ChatWindow({ user, monthName, onBack, onLock, onSignOut }) {
-  const [settings, updateSettings] = useSettings();
+  const [settings, updateSettings, settingsLoaded] = useSettings();
   const [partners, setPartners] = useState([]);
   const [pairs, setPairs] = useState([]);
   const [activeId, setActiveId] = useState(null);
@@ -36,6 +37,8 @@ export default function ChatWindow({ user, monthName, onBack, onLock, onSignOut 
   const [notice, setNotice] = useState('');
   const [notif, setNotif] = useState('checking'); // checking | unsupported | off | on
   const [viewer, setViewer] = useState(null);     // full-screen photo
+  const [nudgeFrom, setNudgeFrom] = useState(null); // partner id who just pinged me
+  const [coolUntil, setCoolUntil] = useState(0);
   const [rec, setRec] = useState(null);           // { secs } while recording a voice message
   const bottom = useRef(null);
   const activeRef = useRef(null);
@@ -49,7 +52,7 @@ export default function ChatWindow({ user, monthName, onBack, onLock, onSignOut 
     let stop = false;
     async function load() {
       const [u, p] = await Promise.all([
-        supabase.from('users').select('id,email').eq('approved', true).neq('id', user.id).order('email'),
+        supabase.from('users').select('id,email,last_seen_at').eq('approved', true).neq('id', user.id).order('email'),
         supabase.from('pairings').select('id,user_a,user_b'),
       ]);
       if (stop) return;
@@ -66,8 +69,24 @@ export default function ChatWindow({ user, monthName, onBack, onLock, onSignOut 
   const partnerName = partner ? partner.email.split('@')[0] : '';
   useEffect(() => { activeRef.current = partner?.id || null; }, [partner?.id]);
 
-  const { online, typing, sendTyping } = usePresence(
-    user.id, pairs.filter((p) => partners.some((x) => x.id === p.partnerId)), settings.shareStatus);
+  const onNudge = useCallback((pid) => {
+    setNudgeFrom(pid);
+    navigator.vibrate?.([200, 100, 200]);
+    setTimeout(() => setNudgeFrom((cur) => (cur === pid ? null : cur)), 6000);
+  }, []);
+  const { online, typing, sendTyping, sendNudge } = usePresence(
+    user.id, pairs.filter((p) => partners.some((x) => x.id === p.partnerId)), settings.shareStatus, onNudge);
+
+  // Record my own "last seen" (null when I've chosen to hide it)
+  useEffect(() => {
+    if (!settingsLoaded) return undefined;
+    const touch = () => supabase.rpc('touch_last_seen', { share: settings.shareStatus }).then(() => {}, () => {});
+    touch();
+    const t = setInterval(() => { if (document.visibilityState === 'visible') touch(); }, 45000);
+    document.addEventListener('visibilitychange', touch); // also records the moment I leave
+    window.addEventListener('pagehide', touch);
+    return () => { clearInterval(t); document.removeEventListener('visibilitychange', touch); window.removeEventListener('pagehide', touch); };
+  }, [settingsLoaded, settings.shareStatus]);
 
   const thread = partner
     ? messages.filter((m) => (m.sender_id === partner.id && m.receiver_id === user.id) ||
@@ -356,8 +375,33 @@ export default function ChatWindow({ user, monthName, onBack, onLock, onSignOut 
     else setMessages((prev) => prev.map((x) => (x.id === m.id ? { ...x, ...data[0] } : x)));
   }
 
+  // "Seen" time under my most recent message that the other person has opened
+  const lastSeenMine = [...thread].reverse().find((m) => m.sender_id === user.id && m.status === 'seen' && m.seen_at && !m.deleted_at);
+
+  const coolLeft = Math.max(0, Math.ceil((coolUntil - now) / 1000));
+  async function nudge() {
+    if (!partner || coolLeft > 0) return;
+    setError(''); setNotice('');
+    try {
+      const { data: sess } = await supabase.auth.getSession();
+      const r = await fetch('/api/nudge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sess.session?.access_token}` },
+        body: JSON.stringify({ partnerId: partner.id }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (r.status === 429) { setCoolUntil(Date.now() + 60000); return setError(j.error); }
+      if (!r.ok && r.status < 500) return setError(j.error || 'Could not send.');
+      sendNudge(partner.id); // instant in-app ping if they have the chat open
+      setCoolUntil(Date.now() + 60000);
+      setNotice(r.ok && j.sent ? 'Notified.' : 'Pinged. (Their phone has notifications off.)');
+      setTimeout(() => setNotice(''), 2500);
+    } catch (e) { setError(e.message); }
+  }
+
+  const partnerLastSeen = partner ? (partners.find((p) => p.id === partner.id)?.last_seen_at || '') : '';
   const subtitle = partner
-    ? (typing[partner.id] ? 'typing…' : online[partner.id] ? 'online' : monthName)
+    ? (typing[partner.id] ? 'typing…' : online[partner.id] ? 'online' : lastSeenText(partnerLastSeen) || monthName)
     : 'Chats';
 
   return (
@@ -370,6 +414,13 @@ export default function ChatWindow({ user, monthName, onBack, onLock, onSignOut 
           <div className="truncate font-semibold">{partner ? partner.email : monthName}</div>
           <div className={`truncate text-xs ${partner && (typing[partner.id] || online[partner.id]) ? 'text-wa-green' : 'text-white/70'}`}>{subtitle}</div>
         </div>
+        {partner && (
+          <button onClick={nudge} disabled={coolLeft > 0} aria-label="Let them know I'm online" title="Let them know I'm online"
+            className="flex items-center gap-1 rounded-full p-2 hover:bg-white/10 disabled:opacity-60">
+            <span className="text-lg leading-none">👋</span>
+            {coolLeft > 0 && <span className="text-[10px] tabular-nums">{coolLeft}</span>}
+          </button>
+        )}
         <button onClick={toggleNotifications} disabled={notif === 'checking'}
           aria-label={notif === 'on' ? 'Turn notifications off' : 'Turn notifications on'}
           title={notif === 'on' ? 'Notifications on' : 'Notifications off'}
@@ -400,6 +451,7 @@ export default function ChatWindow({ user, monthName, onBack, onLock, onSignOut 
               return (
                 <MessageBubble key={m.id} m={m} mine={m.sender_id === user.id} partnerName={partnerName}
                   orig={m.reply_to ? messages.find((x) => x.id === m.reply_to) : null}
+                  seenAt={lastSeenMine && lastSeenMine.id === m.id ? m.seen_at : null}
                   rx={rx} now={now} onMenu={(x) => setMenuId(x.id)} onView={setViewer} />
               );
             })}
@@ -408,6 +460,11 @@ export default function ChatWindow({ user, monthName, onBack, onLock, onSignOut 
         </main>
       )}
 
+      {nudgeFrom && (
+        <div className="shrink-0 bg-wa-green px-4 py-1.5 text-center text-sm font-medium text-white" role="status">
+          👋 {partners.find((p) => p.id === nudgeFrom)?.email.split('@')[0] || 'Someone'} is online
+        </div>
+      )}
       {error && <div className="shrink-0 bg-red-50 px-4 py-1 text-center text-xs text-red-700 dark:bg-red-900/30 dark:text-red-300">{error}</div>}
       {notice && !error && <div className="shrink-0 bg-emerald-50 px-4 py-1 text-center text-xs text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300">{notice}</div>}
 
