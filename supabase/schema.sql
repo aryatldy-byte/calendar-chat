@@ -1,0 +1,515 @@
+-- =====================================================================
+-- Calendar Chat – database schema + Row Level Security
+-- Run this whole file once in Supabase → SQL Editor.
+-- =====================================================================
+
+-- ---------- Tables ----------
+create table if not exists public.users (
+  id            uuid primary key references auth.users(id) on delete cascade,
+  email         text not null unique,
+  password_hash text,                         -- unused: Supabase Auth stores the real hash in auth.users
+  approved      boolean not null default false,
+  rejected      boolean not null default false,
+  created_at    timestamptz not null default now()
+);
+
+create table if not exists public.admins (
+  id            uuid primary key references auth.users(id) on delete cascade,
+  email         text not null,
+  password_hash text                          -- unused, see above
+);
+
+create table if not exists public.messages (
+  id          uuid primary key default gen_random_uuid(),
+  sender_id   uuid not null references public.users(id) on delete cascade,
+  receiver_id uuid not null references public.users(id) on delete cascade,
+  content     text not null check (char_length(content) between 1 and 2000),
+  "timestamp" timestamptz not null default now(),
+  hidden      boolean not null default false,
+  status      text not null default 'sent' check (status in ('sent','delivered','seen'))
+);
+create index if not exists messages_ts_idx on public.messages ("timestamp");
+
+-- ---------- Helper functions ----------
+create or replace function public.is_admin() returns boolean
+language sql security definer stable set search_path = public as $$
+  select exists (select 1 from public.admins where id = auth.uid());
+$$;
+
+create or replace function public.is_approved(uid uuid default auth.uid()) returns boolean
+language sql security definer stable set search_path = public as $$
+  select exists (select 1 from public.users where id = uid and approved and not rejected);
+$$;
+
+-- ---------- Auto-create a profile row on signup (approved = false) ----------
+create or replace function public.handle_new_user() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  insert into public.users (id, email) values (new.id, new.email) on conflict do nothing;
+  return new;
+end $$;
+
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created after insert on auth.users
+  for each row execute function public.handle_new_user();
+
+-- ---------- Hard limit: at most 2 approved users ----------
+create or replace function public.enforce_two_users() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if new.approved and (select count(*) from public.users where approved and id <> new.id) >= 2 then
+    raise exception 'Only 2 users can be approved.';
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists two_users_only on public.users;
+create trigger two_users_only before insert or update on public.users
+  for each row execute function public.enforce_two_users();
+
+-- ---------- Row Level Security ----------
+alter table public.users    enable row level security;
+alter table public.admins   enable row level security;
+alter table public.messages enable row level security;
+
+-- users: see yourself, the other approved user, or everyone if admin. Only admins modify.
+drop policy if exists users_select on public.users;
+create policy users_select on public.users for select to authenticated
+  using (id = auth.uid() or public.is_admin() or (approved and public.is_approved()));
+drop policy if exists users_admin_update on public.users;
+create policy users_admin_update on public.users for update to authenticated
+  using (public.is_admin()) with check (public.is_admin());
+drop policy if exists users_admin_delete on public.users;
+create policy users_admin_delete on public.users for delete to authenticated
+  using (public.is_admin());
+
+-- admins: you can only see your own row (used to check admin status)
+drop policy if exists admins_select on public.admins;
+create policy admins_select on public.admins for select to authenticated
+  using (id = auth.uid());
+
+-- messages: only the two participants, only while approved. Admins cannot read content.
+drop policy if exists messages_select on public.messages;
+create policy messages_select on public.messages for select to authenticated
+  using (public.is_approved() and (sender_id = auth.uid() or receiver_id = auth.uid()));
+drop policy if exists messages_insert on public.messages;
+create policy messages_insert on public.messages for insert to authenticated
+  with check (sender_id = auth.uid() and status = 'sent' and public.is_approved() and public.is_approved(receiver_id));
+
+-- ---------- Admin-only maintenance (no read access to content needed) ----------
+create or replace function public.admin_message_count() returns bigint
+language plpgsql security definer set search_path = public as $$
+begin
+  if not public.is_admin() then raise exception 'not authorized'; end if;
+  return (select count(*) from public.messages);
+end $$;
+
+create or replace function public.admin_purge_messages(older_than_minutes int default 0) returns int
+language plpgsql security definer set search_path = public as $$
+declare n int;
+begin
+  if not public.is_admin() then raise exception 'not authorized'; end if;
+  delete from public.messages where "timestamp" < now() - make_interval(mins => older_than_minutes);
+  get diagnostics n = row_count;
+  return n;
+end $$;
+
+revoke execute on function public.admin_message_count()      from public, anon;
+revoke execute on function public.admin_purge_messages(int)  from public, anon;
+grant  execute on function public.admin_message_count()      to authenticated;
+grant  execute on function public.admin_purge_messages(int)  to authenticated;
+
+-- ---------- Seen ticks ----------
+-- Recipient marks messages as seen via this function (no UPDATE policy needed on the table)
+create or replace function public.mark_messages_seen() returns int
+language plpgsql security definer set search_path = public as $$
+declare n int;
+begin
+  if not public.is_approved() then return 0; end if;
+  update public.messages set status = 'seen'
+   where receiver_id = auth.uid() and status <> 'seen';
+  get diagnostics n = row_count;
+  return n;
+end $$;
+
+revoke execute on function public.mark_messages_seen() from public, anon;
+grant  execute on function public.mark_messages_seen() to authenticated;
+
+-- ---------- Realtime ----------
+alter publication supabase_realtime add table public.messages;
+
+-- ---------- Optional: automatic weekly cleanup (enable pg_cron under Database → Extensions) ----------
+-- select cron.schedule('weekly-message-purge', '0 3 * * 0',
+--   $$ delete from public.messages where "timestamp" < now() - interval '1 day' $$);
+
+-- ---------- Create your first admin ----------
+-- 1) Supabase → Authentication → Users → Add user (email + password, tick "Auto confirm").
+-- 2) Then run (replace the email):
+-- insert into public.admins (id, email) select id, email from auth.users where email = 'you@example.com';
+
+-- =====================================================================
+-- PART 2: ticks + push (same as migration_002_ticks_and_push.sql)
+-- =====================================================================
+
+-- 1) Message status: 'sent' (default, saved in Supabase) -> 'seen' (recipient opened chat)
+alter table public.messages add column if not exists status text not null default 'sent';
+alter table public.messages drop constraint if exists messages_status_check;
+alter table public.messages add constraint messages_status_check
+  check (status in ('sent', 'delivered', 'seen'));
+
+-- Senders may only insert new messages with status 'sent'
+drop policy if exists messages_insert on public.messages;
+create policy messages_insert on public.messages for insert to authenticated
+  with check (sender_id = auth.uid() and status = 'sent'
+              and public.is_approved() and public.is_approved(receiver_id));
+
+-- The RECEIVER may update ONLY the status column (to mark messages as seen)
+revoke update on public.messages from anon, authenticated;
+grant  update (status) on public.messages to authenticated;
+drop policy if exists messages_mark_seen on public.messages;
+create policy messages_mark_seen on public.messages for update to authenticated
+  using      (public.is_approved() and receiver_id = auth.uid())
+  with check (public.is_approved() and receiver_id = auth.uid());
+
+-- 2) Push notification subscriptions (one row per browser/device)
+create table if not exists public.push_subscriptions (
+  id         uuid primary key default gen_random_uuid(),
+  user_id    uuid not null references public.users(id) on delete cascade,
+  endpoint   text not null unique,
+  p256dh     text not null,
+  auth       text not null,
+  created_at timestamptz not null default now()
+);
+alter table public.push_subscriptions enable row level security;
+
+drop policy if exists push_select on public.push_subscriptions;
+create policy push_select on public.push_subscriptions for select to authenticated using (user_id = auth.uid());
+drop policy if exists push_insert on public.push_subscriptions;
+create policy push_insert on public.push_subscriptions for insert to authenticated with check (user_id = auth.uid());
+drop policy if exists push_update on public.push_subscriptions;
+create policy push_update on public.push_subscriptions for update to authenticated
+  using (user_id = auth.uid()) with check (user_id = auth.uid());
+drop policy if exists push_delete on public.push_subscriptions;
+create policy push_delete on public.push_subscriptions for delete to authenticated using (user_id = auth.uid());
+
+-- =====================================================================
+-- PART 3: multi-user (same as migration_003_multi_user.sql)
+-- =====================================================================
+
+-- 1) Remove the "max 2 approved users" limit
+drop trigger  if exists two_users_only on public.users;
+drop function if exists public.enforce_two_users();
+
+-- 2) Pairings: which users are allowed to chat with each other (one row per pair)
+create table if not exists public.pairings (
+  id         uuid primary key default gen_random_uuid(),
+  user_a     uuid not null references public.users(id) on delete cascade,
+  user_b     uuid not null references public.users(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  check (user_a < user_b),           -- stored in a fixed order so a pair exists only once
+  unique (user_a, user_b)
+);
+alter table public.pairings enable row level security;
+
+create or replace function public.are_paired(a uuid, b uuid) returns boolean
+language sql security definer stable set search_path = public as $$
+  select exists (select 1 from public.pairings where user_a = least(a, b) and user_b = greatest(a, b));
+$$;
+
+drop policy if exists pairings_select on public.pairings;
+create policy pairings_select on public.pairings for select to authenticated
+  using (public.is_admin() or user_a = auth.uid() or user_b = auth.uid());
+drop policy if exists pairings_admin_delete on public.pairings;
+create policy pairings_admin_delete on public.pairings for delete to authenticated
+  using (public.is_admin());
+
+create or replace function public.admin_pair_users(a uuid, b uuid) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if not public.is_admin() then raise exception 'not authorized'; end if;
+  if a = b then raise exception 'Choose two different users.'; end if;
+  insert into public.pairings (user_a, user_b) values (least(a, b), greatest(a, b))
+  on conflict do nothing;
+end $$;
+
+revoke execute on function public.are_paired(uuid, uuid)     from public, anon;
+revoke execute on function public.admin_pair_users(uuid, uuid) from public, anon;
+grant  execute on function public.are_paired(uuid, uuid)     to authenticated;
+grant  execute on function public.admin_pair_users(uuid, uuid) to authenticated;
+
+-- 3) Users now only see themselves and the people they are paired with (admins see all)
+drop policy if exists users_select on public.users;
+create policy users_select on public.users for select to authenticated
+  using (id = auth.uid() or public.is_admin()
+         or (approved and public.is_approved() and public.are_paired(id, auth.uid())));
+
+-- 4) Messages only between paired, approved users
+drop policy if exists messages_select on public.messages;
+create policy messages_select on public.messages for select to authenticated
+  using (public.is_approved() and (sender_id = auth.uid() or receiver_id = auth.uid())
+         and public.are_paired(sender_id, receiver_id));
+
+drop policy if exists messages_insert on public.messages;
+create policy messages_insert on public.messages for insert to authenticated
+  with check (sender_id = auth.uid() and status = 'sent'
+              and public.is_approved() and public.is_approved(receiver_id)
+              and public.are_paired(sender_id, receiver_id));
+
+-- 5) Keep today's chat working: pair the users who are already approved
+insert into public.pairings (user_a, user_b)
+select a.id, b.id from public.users a join public.users b on a.id < b.id
+where a.approved and b.approved
+on conflict do nothing;
+
+-- =====================================================================
+-- PART 4: seen timer (same as migration_004_seen_timer.sql)
+-- =====================================================================
+
+alter table public.messages add column if not exists seen_at timestamptz;
+
+-- Server-side stamp: seen_at is set by the database (not the client) the moment status becomes 'seen'.
+create or replace function public.stamp_seen_at() returns trigger
+language plpgsql as $$
+begin
+  if old.status = 'seen' then            -- 'seen' is final; the timer never restarts
+    new.status  := 'seen';
+    new.seen_at := old.seen_at;
+  elsif new.status = 'seen' then
+    new.seen_at := now();
+  else
+    new.seen_at := old.seen_at;
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists messages_stamp_seen on public.messages;
+create trigger messages_stamp_seen before update on public.messages
+  for each row execute function public.stamp_seen_at();
+
+-- Messages already marked seen before this migration: treat them as seen when they were sent (they expire now)
+update public.messages set seen_at = "timestamp" where status = 'seen' and seen_at is null;
+
+-- =====================================================================
+-- PART 5: photos + voice (same as migration_005_media.sql)
+-- =====================================================================
+
+-- 1) Message columns
+alter table public.messages add column if not exists type text not null default 'text';
+alter table public.messages drop constraint if exists messages_type_check;
+alter table public.messages add constraint messages_type_check check (type in ('text', 'image', 'voice'));
+alter table public.messages add column if not exists media_path text;
+alter table public.messages add column if not exists media_duration int;
+
+-- Senders may only attach files from their own folder
+drop policy if exists messages_insert on public.messages;
+create policy messages_insert on public.messages for insert to authenticated
+  with check (sender_id = auth.uid() and status = 'sent'
+              and public.is_approved() and public.is_approved(receiver_id)
+              and public.are_paired(sender_id, receiver_id)
+              and ((type = 'text' and media_path is null)
+                   or (type in ('image', 'voice') and split_part(media_path, '/', 1) = auth.uid()::text)));
+
+-- 2) Private bucket: 10 MB max, images + audio only
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('chat-media', 'chat-media', false, 10485760,
+        array['image/jpeg', 'image/png', 'image/webp', 'audio/webm', 'audio/mp4', 'audio/ogg', 'audio/mpeg'])
+on conflict (id) do update
+  set public = false, file_size_limit = 10485760,
+      allowed_mime_types = array['image/jpeg', 'image/png', 'image/webp', 'audio/webm', 'audio/mp4', 'audio/ogg', 'audio/mpeg'];
+
+-- 3) Who can read a file: its uploader, or a paired participant of a message that references it
+create or replace function public.can_read_media(p text) returns boolean
+language sql security definer stable set search_path = public as $$
+  select exists (
+    select 1 from public.messages m
+    where m.media_path = p and public.is_approved()
+      and (m.sender_id = auth.uid() or m.receiver_id = auth.uid())
+      and public.are_paired(m.sender_id, m.receiver_id));
+$$;
+revoke execute on function public.can_read_media(text) from public, anon;
+grant  execute on function public.can_read_media(text) to authenticated;
+
+drop policy if exists "chat media upload" on storage.objects;
+create policy "chat media upload" on storage.objects for insert to authenticated
+  with check (bucket_id = 'chat-media' and (storage.foldername(name))[1] = auth.uid()::text and public.is_approved());
+
+drop policy if exists "chat media read" on storage.objects;
+create policy "chat media read" on storage.objects for select to authenticated
+  using (bucket_id = 'chat-media'
+         and ((storage.foldername(name))[1] = auth.uid()::text or public.can_read_media(name)));
+
+drop policy if exists "chat media delete own" on storage.objects;
+create policy "chat media delete own" on storage.objects for delete to authenticated
+  using (bucket_id = 'chat-media' and (storage.foldername(name))[1] = auth.uid()::text);
+
+-- =====================================================================
+-- PART 6: chat features (same as migration_006_chat_features.sql)
+-- =====================================================================
+
+alter table public.messages add column if not exists reply_to   uuid references public.messages(id) on delete set null;
+alter table public.messages add column if not exists edited_at  timestamptz;
+alter table public.messages add column if not exists deleted_at timestamptz;
+
+-- Content may be emptied when a message is deleted
+alter table public.messages drop constraint if exists messages_content_check;
+alter table public.messages drop constraint if exists messages_content_len;
+alter table public.messages add constraint messages_content_len check (char_length(content) <= 2000);
+
+-- A reply must point to a message of the SAME conversation
+create or replace function public.reply_ok(reply uuid, s uuid, r uuid) returns boolean
+language sql security definer stable set search_path = public as $$
+  select reply is null or exists (
+    select 1 from public.messages m
+    where m.id = reply and ((m.sender_id = s and m.receiver_id = r) or (m.sender_id = r and m.receiver_id = s)));
+$$;
+
+drop policy if exists messages_insert on public.messages;
+create policy messages_insert on public.messages for insert to authenticated
+  with check (sender_id = auth.uid() and status = 'sent' and seen_at is null
+              and deleted_at is null and edited_at is null
+              and public.is_approved() and public.is_approved(receiver_id)
+              and public.are_paired(sender_id, receiver_id)
+              and public.reply_ok(reply_to, sender_id, receiver_id)
+              and ((type = 'text' and media_path is null and char_length(content) between 1 and 2000)
+                   or (type in ('image', 'voice') and split_part(media_path, '/', 1) = auth.uid()::text)));
+
+-- Senders may edit / delete their own messages; the guard trigger limits WHAT may change
+grant update (status, content, edited_at, deleted_at, media_path) on public.messages to authenticated;
+drop policy if exists messages_sender_update on public.messages;
+create policy messages_sender_update on public.messages for update to authenticated
+  using      (public.is_approved() and sender_id = auth.uid() and public.are_paired(sender_id, receiver_id))
+  with check (public.is_approved() and sender_id = auth.uid() and public.are_paired(sender_id, receiver_id));
+
+create or replace function public.guard_message_update() returns trigger
+language plpgsql as $$
+declare uid uuid := auth.uid();
+begin
+  if uid is null then return new; end if;   -- service role / SQL editor
+
+  if new.id is distinct from old.id or new.sender_id is distinct from old.sender_id
+     or new.receiver_id is distinct from old.receiver_id or new."timestamp" is distinct from old."timestamp"
+     or new.type is distinct from old.type or new.reply_to is distinct from old.reply_to
+     or new.media_duration is distinct from old.media_duration or new.hidden is distinct from old.hidden then
+    raise exception 'These message fields cannot be changed.';
+  end if;
+
+  if uid = old.receiver_id then               -- recipient: may only mark as seen
+    if new.content is distinct from old.content or new.media_path is distinct from old.media_path
+       or new.edited_at is distinct from old.edited_at or new.deleted_at is distinct from old.deleted_at then
+      raise exception 'Recipients can only mark messages as seen.';
+    end if;
+    return new;
+  elsif uid = old.sender_id then              -- sender: may edit text or delete for everyone
+    if new.status is distinct from old.status or new.seen_at is distinct from old.seen_at then
+      raise exception 'Only the recipient can change the seen status.';
+    end if;
+    if old.deleted_at is not null then raise exception 'This message was already deleted.'; end if;
+    if new.deleted_at is not null then        -- delete for everyone
+      new.deleted_at := now(); new.content := ''; new.media_path := null; new.edited_at := old.edited_at;
+      return new;
+    end if;
+    if new.media_path is distinct from old.media_path then raise exception 'Attachments cannot be changed.'; end if;
+    if new.content is distinct from old.content then
+      if old.type <> 'text' then raise exception 'Only text messages can be edited.'; end if;
+      if now() - old."timestamp" > interval '15 minutes' then raise exception 'Messages can only be edited for 15 minutes.'; end if;
+      if char_length(new.content) not between 1 and 2000 then raise exception 'Message length must be 1-2000 characters.'; end if;
+      new.edited_at := now();
+    else
+      new.edited_at := old.edited_at;
+    end if;
+    return new;
+  end if;
+  raise exception 'Not allowed.';
+end $$;
+
+drop trigger if exists messages_guard_update on public.messages;
+create trigger messages_guard_update before update on public.messages   -- fires before messages_stamp_seen (alphabetical)
+  for each row execute function public.guard_message_update();
+
+-- Reactions: one emoji per person per message ('' = removed; clients never DELETE, so realtime stays RLS-filtered)
+create table if not exists public.message_reactions (
+  message_id uuid not null references public.messages(id) on delete cascade,
+  user_id    uuid not null references public.users(id) on delete cascade,
+  emoji      text not null default '' check (char_length(emoji) <= 16),
+  primary key (message_id, user_id)
+);
+alter table public.message_reactions enable row level security;
+
+create or replace function public.can_see_message(mid uuid) returns boolean
+language sql security definer stable set search_path = public as $$
+  select exists (select 1 from public.messages m
+    where m.id = mid and public.is_approved()
+      and (m.sender_id = auth.uid() or m.receiver_id = auth.uid())
+      and public.are_paired(m.sender_id, m.receiver_id));
+$$;
+revoke execute on function public.can_see_message(uuid) from public, anon;
+grant  execute on function public.can_see_message(uuid) to authenticated;
+
+drop policy if exists reactions_select on public.message_reactions;
+create policy reactions_select on public.message_reactions for select to authenticated
+  using (public.can_see_message(message_id));
+drop policy if exists reactions_insert on public.message_reactions;
+create policy reactions_insert on public.message_reactions for insert to authenticated
+  with check (user_id = auth.uid() and public.can_see_message(message_id));
+drop policy if exists reactions_update on public.message_reactions;
+create policy reactions_update on public.message_reactions for update to authenticated
+  using (user_id = auth.uid() and public.can_see_message(message_id))
+  with check (user_id = auth.uid() and public.can_see_message(message_id));
+
+do $$ begin
+  if not exists (select 1 from pg_publication_tables
+                 where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'message_reactions') then
+    alter publication supabase_realtime add table public.message_reactions;
+  end if;
+end $$;
+
+-- =====================================================================
+-- PART 7: last seen + nudge (same as migration_007_last_seen_nudge.sql)
+-- =====================================================================
+
+alter table public.users add column if not exists last_seen_at timestamptz;
+
+-- Each signed-in, approved user records their own last-online time (null = hidden by their privacy setting)
+create or replace function public.touch_last_seen(share boolean default true) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if auth.uid() is null or not public.is_approved() then return; end if;
+  update public.users set last_seen_at = case when share then now() else null end where id = auth.uid();
+end $$;
+revoke execute on function public.touch_last_seen(boolean) from public, anon;
+grant  execute on function public.touch_last_seen(boolean) to authenticated;
+
+-- Nudge log (rate limiting). No policies on purpose: only the server (service role) reads/writes it.
+create table if not exists public.nudges (
+  id          uuid primary key default gen_random_uuid(),
+  sender_id   uuid not null references public.users(id) on delete cascade,
+  receiver_id uuid not null references public.users(id) on delete cascade,
+  created_at  timestamptz not null default now()
+);
+create index if not exists nudges_pair_idx on public.nudges (sender_id, receiver_id, created_at desc);
+alter table public.nudges enable row level security;
+
+-- =====================================================================
+-- PART 8: online alerts + clear chat (same as migration_008_online_alerts.sql)
+-- =====================================================================
+
+-- 1) Each person can switch "tell me when they come online" notifications on/off (default on)
+alter table public.users add column if not exists online_alerts boolean not null default true;
+
+create or replace function public.set_online_alerts(enabled boolean) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if auth.uid() is null or not public.is_approved() then return; end if;
+  update public.users set online_alerts = enabled where id = auth.uid();
+end $$;
+revoke execute on function public.set_online_alerts(boolean) from public, anon;
+grant  execute on function public.set_online_alerts(boolean) to authenticated;
+
+-- 2) The nudge log now also records automatic "came online" alerts (separate rate limit from the 👋 button)
+alter table public.nudges add column if not exists kind text not null default 'nudge';
+alter table public.nudges drop constraint if exists nudges_kind_check;
+alter table public.nudges add constraint nudges_kind_check check (kind in ('nudge', 'online'));
+create index if not exists nudges_kind_idx on public.nudges (sender_id, receiver_id, kind, created_at desc);
+
+-- Note: "Clear chat" and the 15-minute deletion run on the server (/api/clear-chat, /api/purge-expired)
+-- with the service role key, so no new table permissions are needed for them.
